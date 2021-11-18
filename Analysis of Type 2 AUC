@@ -1,0 +1,312 @@
+library(tidyverse)
+library(here)
+library(ggpubr)
+library(rstan)
+library(brms)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+source("https://gist.githubusercontent.com/benmarwick/2a1bb0133ff568cbe28d/raw/fb53bd97121f7f9ce947837ef1a4c65a73bffb3f/geom_flat_violin.R")
+
+files <- list.files(here("data"), pattern = "_raw.csv")
+
+read_data <- function(x){
+  read_csv(x) %>% 
+    mutate(group = str_sub(x, start = -9, end = -9),
+           age = str_sub(x, start = -12, end = -11)) -> d_out
+  return(d_out)
+}
+
+here("data", files) %>% 
+  map_df(read_data)  -> df
+
+df %>% 
+  mutate(age = fct_recode(age, '5-6' = "56", '7-9' = "79", '10-12' = "12", 'adult' = "ad", '5-6(Ex.1b)' = "65"),
+         age = fct_relevel(age, "adult", "10-12", "7-9", "5-6", "5-6(Ex.1b)"))-> df
+df %>% 
+  select(subject, age) %>% 
+  distinct() %>% 
+  arrange(age) %>% 
+  mutate(id = row_number()) -> df_id
+
+df %>% 
+  left_join(df_id, by = c("subject", "age")) %>% 
+  select(-subject) %>% 
+  rename(subject = "id") -> df
+
+df %>% 
+  filter(values.Index == 0) %>% 
+  group_by(subject) %>% 
+  summarise(trial_correct = max(values.sum),
+            .groups = "drop") %>% 
+  filter(trial_correct <= 4) %>% 
+  pull(subject) -> subject_remove1
+
+df %>%
+  filter(values.res > 0) %>% 
+  group_by(subject) %>% 
+  summarise(N_patch = n(),
+            Total = sum(N_patch),
+            catch_correct = sum(values.accuracy),
+            catch_prop = catch_correct/Total, 
+            .groups = "drop") %>%
+  filter(catch_prop < 0.7) %>% 
+  pull(subject) -> subject_remove3
+
+df %>%
+  group_by(subject) %>%
+  filter(values.res == 0) %>% 
+  filter(values.Index != 0) %>% 
+  summarise(stim_num = length(values.patch_ID),
+            .groups = "drop") %>% 
+  filter(stim_num != 180) %>% 
+  pull(subject) -> subject_remove2
+
+subject_remove <- unique(c(subject_remove1, subject_remove2, subject_remove3))
+
+sub_total <- length(unique(df$subject))
+length(subject_remove1)/sub_total
+length(subject_remove2)/sub_total
+length(subject_remove3)/sub_total
+length(subject_remove)/sub_total
+
+df %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = as.factor(values.p_confidence * values.response)) -> df
+
+df %>%
+  group_by(subject, values.Index) %>% 
+  mutate(values.patch_ID_lag = lag(values.patch_ID)) %>% 
+  relocate(starts_with("values.patch_ID")) %>% 
+  mutate(bug_row = if_else(values.patch_ID == values.patch_ID_lag, 1, 0, 0),
+         .after = values.patch_ID_lag) %>% 
+  ungroup() %>% 
+  mutate(values.Exist_Object = if_else(bug_row == 1, 1, values.Exist_Object)) -> df3
+
+expand.grid(subject = unique(df3$subject),
+            values.Index = 1:30) %>% 
+  arrange(subject, values.Index) %>% 
+  mutate(id_loop = row_number()) %>% 
+  as_tibble() %>% 
+  right_join(df3, by = c("subject", "values.Index")) -> df4
+
+df4 %>% 
+  filter(subject < 0) -> df_null
+
+for (i in 1:max(df4$id_loop)) {
+  df_tmp <- filter(df4, id_loop == i)
+  condition_tmp <- unique(df_tmp$values.CongOrIncong)
+  if (condition_tmp == 0){
+    filter(df_tmp, values.Patch_Source == 3) %>% 
+      pull(values.Patch_Position) -> val_replace
+    
+  } else {
+    filter(df_tmp, values.Patch_Source == 2) %>% 
+      pull(values.Patch_Position) -> val_replace
+  }
+  
+  length(val_replace)
+  
+  df_tmp %>% 
+    mutate(values.Patch_Position = if_else(bug_row == 1, val_replace, values.Patch_Position)) -> df_tmp
+  
+  df_null <- bind_rows(df_null, df_tmp)
+}
+
+df_null
+
+df_null %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = (values.p_confidence * values.response)) %>%
+  group_by(subject, values.CongOrIncong, values.Patch_Source, res) %>%
+  summarise(N_patch = n(),
+            .groups = "drop") %>% 
+  complete(subject, values.CongOrIncong, values.Patch_Source, res) %>%
+  replace_na(replace = list(N_patch = 0)) %>% 
+  group_by(subject, values.CongOrIncong, values.Patch_Source) %>% 
+  mutate(Total = sum(N_patch), 
+         Prop = N_patch / Total,
+         Patch = as.character(values.Patch_Source),
+         Condition = if_else(values.CongOrIncong == 1,
+                                       "incongruent",
+                                       "congruent")) %>% 
+  ungroup() -> df_sub
+
+df_sub %>% 
+  filter(Patch == "1") %>% 
+  mutate(accuracy = case_when(res == "-2" ~ "correct",
+                              res == "-1" ~ "correct",
+                              res == "1" ~ "incorrect",
+                              res == "2" ~ "incorrect")) -> df_absent
+
+df_sub %>% 
+  filter(Condition == "congruent") %>% 
+  filter(Patch == "2") %>% 
+  mutate(accuracy = case_when(res == "-2" ~ "incorrect",
+                              res == "-1" ~ "incorrect",
+                              res == "1" ~ "correct",
+                              res == "2" ~ "correct")) -> df_present_cong
+
+df_sub %>% 
+  filter(Condition == "incongruent") %>% 
+  filter(Patch == "3") %>% 
+  mutate(accuracy = case_when(res == "-2" ~ "incorrect",
+                              res == "-1" ~ "incorrect",
+                              res == "1" ~ "correct",
+                              res == "2" ~ "correct")) -> df_present_incong
+
+bind_rows(df_present_cong, df_present_incong) -> df_present
+
+bind_rows(df_absent, df_present) -> df_sub2
+
+df_sub2 %>%
+  filter(accuracy == "correct") %>% 
+  mutate(accuracy = case_when(res == "2" ~ "hit",
+                              res == "-2" ~ "hit",
+                              res == "1" ~ "miss",
+                              res == "-1" ~ "miss")) -> df_sig_present
+
+df_sub2 %>%
+  filter(accuracy == "incorrect") %>% 
+  mutate(accuracy = case_when(res == "2" ~ "fa",
+                              res == "-2" ~ "fa",
+                              res == "1" ~ "cr",
+                              res == "-1" ~ "cr")) -> df_sig_absent
+
+bind_rows(df_sig_present, df_sig_absent) %>% 
+  group_by(subject, accuracy) %>%
+  summarise(N_patch2 = sum(N_patch),
+            Total2 = sum(Total),
+            Prop2 = N_patch2 / Total2,
+            .groups = "drop_last") %>% 
+  mutate(value = cumsum(Prop2)) %>% 
+  filter(accuracy != "miss") %>% 
+  filter(accuracy != "cr") %>% 
+  arrange(subject, accuracy) %>% 
+  ungroup() %>% 
+  mutate(id_row = 1) %>%
+  select(subject, accuracy, id_row, value) -> df_auc_tmp1
+
+expand.grid(subject = unique(df_auc_tmp1$subject),
+            accuracy = unique(df_auc_tmp1$accuracy),
+            id_row = 0,
+            res = NA_real_,
+            value = 0,
+            stringsAsFactors = FALSE) %>% 
+  as_tibble() %>% 
+  bind_rows(df_auc_tmp1) %>% 
+  arrange(subject, accuracy) %>% 
+  pivot_wider(values_from = value,
+              names_from = accuracy) ->　df_auc_tmp2
+
+df %>% 
+  select(subject, age) %>% 
+  distinct() -> df_age
+
+tibble(subject = unique(df_auc_tmp2$subject),
+       id_row = 2, 
+       res = NA_real_,
+       fa = 1, 
+       hit = 1) %>% 
+  bind_rows(df_auc_tmp2) %>% 
+  arrange(subject, id_row) ->　df_auc_tmp2
+
+tibble(subject = unique(df_auc_tmp2$subject),
+       id_row = 3, 
+       res = NA_real_,
+       fa = 1, 
+       hit = 0) %>% 
+  bind_rows(df_auc_tmp2) %>% 
+  arrange(subject, id_row) %>%
+  rename(x = "fa", y = "hit") %>% 
+  group_by(subject) %>% 
+  mutate(x_next = lead(x, default = 0),
+         y_next = lead(y, default = 0),
+         cross = x * y_next - x_next *y) %>% 
+  summarise(AUC = abs(sum(cross))/2,
+            .groups = "drop") %>% 
+  left_join(df_age, by = "subject") %>% 
+  mutate(Patch = "all")-> df_auc_tmp3
+
+df_auc_tmp3 %>% 
+  group_by(age) %>% 
+  summarise(N = n(),
+            Mean = mean(AUC),
+            SD = sd(AUC),
+            SE = SD/sqrt(N),
+            .groups = "drop")  -> df_final
+
+df_final%>% 
+  ggplot(aes(x = age, y = Mean)) +
+  geom_linerange(aes(ymax = Mean + SE, ymin = Mean - SE), lwd = 1, position = position_dodge(0.2)) +
+  geom_point(size = 2, position = position_dodge(0.2)) +
+  geom_hline(yintercept = 0.5, lty = 5) +
+  #coord_fixed(ylim = c(0.5, 1.0)) +
+  scale_y_continuous(breaks=seq(0.5, 1.0, 0.10)) +
+  labs(y = "Mean AUC") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+df_auc_tmp3 %>% #Figure 4
+  ggplot(aes(x=age, y=AUC, fill = age))+
+  geom_flat_violin(aes(x=age, y=AUC), 
+                   position = position_nudge(x = .15, y = 0),adjust =2, trim = TRUE)+    
+  geom_point(position = position_jitter(width = .15), size = 1)+    
+  geom_boxplot(aes(x = as.numeric(age) + 0.25, y = AUC, group = age), 
+               outlier.shape = NA, width = .1, fill = "white", colour = "BLACK") +
+  guides(fill = "none", colour = "none")+
+  scale_fill_manual(values=cbPalette) +
+  scale_colour_manual(values=cbPalette) +
+  ggtitle("present & original vs. absent")+
+  ylab('Type 2 AUC') +
+  xlab('age') +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+df_auc_tmp3 %>%
+  filter(age != "5-6(Ex.1b)") %>% 
+  mutate(age = fct_recode(age, '1' = "adult", '2' = "10-12", '3' = "7-9", '4' = "5-6"),
+         age = as.numeric(age)) -> df_auc_tmp4
+
+df_auc_tmp4 %>%
+  summary()
+
+model.matrix(AUC ~ age, df_auc_tmp4)
+
+model_age <- brm(
+  formula = AUC ~ age,
+  family = gaussian(),
+  data = df_auc_tmp4,
+  seed = 1,
+  prior = c(set_prior("cauchy(0,1)", class = "Intercept"),
+            set_prior("cauchy(0,1)", class = "sigma")),
+  iter = 10000,
+  save_pars = save_pars(all = TRUE)
+)
+
+summary(model_age)
+
+model_null <- brm(
+  formula = AUC ~ 1,
+  family = gaussian(),
+  data = df_auc_tmp4,
+  seed = 1,
+  prior = c(set_prior("cauchy(0,1)", class = "Intercept"),
+            set_prior("cauchy(0,1)", class = "sigma")),
+  iter = 10000,
+  save_pars = save_pars(all = TRUE)
+)
+
+summary(model_null)
+
+eff <- marginal_effects(model_age)
+plot(eff, points = FALSE)
+
+bf <- bayes_factor(model_age, model_null)
+bf
