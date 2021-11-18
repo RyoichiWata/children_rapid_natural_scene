@@ -1,0 +1,236 @@
+library(tidyverse)
+library(here)
+library(ggpubr)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+files <- list.files(here("data"), pattern = "_raw.csv")
+read_data <- function(x){
+  read_csv(x) %>% 
+    mutate(group = str_sub(x, start = -9, end = -9),
+           age = str_sub(x, start = -12, end = -11)) -> d_out
+  return(d_out)
+}
+here("data", files) %>% 
+  map_df(read_data) -> df
+
+df %>% 
+  mutate(age = as.factor(age),
+         age = fct_recode(age, '5-6' = "56", '7-9' = "79", '10-12' = "12", 'adult' = "ad", '5-6(Ex.1b)' = "65"),
+         age = fct_relevel(age, "adult", "10-12", "7-9", "5-6", "5-6(Ex.1b)")) %>% 
+  filter(age == "5-6(Ex.1b)")-> df
+
+df %>% 
+  select(subject, group) %>% 
+  distinct() %>% 
+  arrange(group) %>% 
+  mutate(id = row_number()) -> df_id
+
+df %>% 
+  left_join(df_id, by = c("subject", "group")) %>% 
+  select(-subject) %>% 
+  rename(subject = "id") -> df
+
+df %>% 
+  filter(values.Index == 0) %>% 
+  group_by(subject) %>% 
+  summarise(trial_correct = max(values.sum),
+            .groups = "drop") %>% 
+  filter(trial_correct <= 4) %>% 
+  pull(subject) -> subject_remove1
+
+df %>%
+  filter(values.res > 0) %>% 
+  group_by(subject) %>% 
+  summarise(N_patch = n(),
+            Total = sum(N_patch),
+            catch_correct = sum(values.accuracy),
+            catch_prop = catch_correct/Total, 
+            .groups = "drop") %>%
+  filter(catch_prop < 0.7) %>% 
+  pull(subject) -> subject_remove3
+
+df %>%
+  group_by(subject) %>%
+  filter(values.res == 0) %>% 
+  filter(values.Index != 0) %>% 
+  summarise(stim_num = length(values.patch_ID),
+            .groups = "drop") %>% 
+  filter(stim_num != 180) %>% 
+  pull(subject) -> subject_remove2
+
+subject_remove <- unique(c(subject_remove1, subject_remove2, subject_remove3))
+
+df %>% 
+  select(subject, group) %>% 
+  distinct() %>% 
+  mutate(removed_subjects = if_else(subject %in% subject_remove, 1, 0)) %>% 
+  group_by(group) %>% 
+  summarise(N_subject = n(),
+            N_remove = sum(removed_subjects),
+            Prop_remove = N_remove/N_subject)
+
+sub_total <- length(unique(df$subject))
+length(subject_remove1)/sub_total
+length(subject_remove2)/sub_total
+length(subject_remove3)/sub_total
+length(subject_remove)/sub_total
+
+df %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = as.factor(values.p_confidence * values.response)) -> df
+
+df %>%
+  group_by(subject, values.Index) %>% 
+  mutate(values.patch_ID_lag = lag(values.patch_ID)) %>% 
+  relocate(starts_with("values.patch_ID")) %>% 
+  mutate(bug_row = if_else(values.patch_ID == values.patch_ID_lag, 1, 0, 0),
+         .after = values.patch_ID_lag) %>% 
+  ungroup() %>% 
+  mutate(values.Exist_Object = if_else(bug_row == 1, 1, values.Exist_Object)) -> df3
+
+expand.grid(subject = unique(df3$subject),
+            values.Index = 1:30) %>% 
+  arrange(subject, values.Index) %>% 
+  mutate(id_loop = row_number()) %>% 
+  as_tibble() %>% 
+  right_join(df3, by = c("subject", "values.Index")) -> df4
+
+df4 %>% 
+  filter(subject < 0) -> df_null
+
+for (i in 1:max(df4$id_loop)) {
+  df_tmp <- filter(df4, id_loop == i)
+  condition_tmp <- unique(df_tmp$values.CongOrIncong)
+  if (condition_tmp == 0){
+    filter(df_tmp, values.Patch_Source == 3) %>% 
+      pull(values.Patch_Position) -> val_replace
+    
+  } else {
+    filter(df_tmp, values.Patch_Source == 2) %>% 
+      pull(values.Patch_Position) -> val_replace
+  }
+  
+  length(val_replace)
+  
+  df_tmp %>% 
+    mutate(values.Patch_Position = if_else(bug_row == 1, val_replace, values.Patch_Position)) -> df_tmp
+  
+  df_null <- bind_rows(df_null, df_tmp)
+}
+
+df_null
+
+df_null %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = (values.p_confidence * values.response)) %>%
+  group_by(values.Image_ID, subject, values.CongOrIncong, values.Patch_Source, res) %>%
+  summarise(N_patch = n(),
+            .groups = "drop") %>% 
+  complete(values.Image_ID, subject, values.CongOrIncong, values.Patch_Source, res) %>%
+  replace_na(replace = list(N_patch = 0)) %>% 
+  group_by(subject, values.CongOrIncong, values.Patch_Source) %>% 
+  mutate(Total = sum(N_patch), 
+         Prop = N_patch / Total,
+         Patch = as.character(values.Patch_Source),
+         Image = as.character(values.Image_ID),
+         values.CongOrIncong = if_else(values.CongOrIncong == 1, "incongruent", "congruent")) %>%
+  ungroup() %>% 
+  group_by(Image, values.CongOrIncong, Patch) %>% 
+  summarise(Mean = sum(Prop * res)) %>% 
+  ungroup() -> df_sub
+
+df_sub %>%
+  select(Image) %>% 
+  distinct() %>% 
+  sample_n(30) %>% 
+  pull(Image) -> Image_vis
+
+df_sub %>%
+  filter(Image %in% Image_vis) %>%
+  filter(values.CongOrIncong == "congruent") %>%
+  mutate(Patch = fct_recode(Patch, absent = "1", present = "2", modified = "3"),
+         Patch = fct_relevel(Patch, "present", "modified", "absent")) -> df_cong
+
+df_cong %>% 
+  ggplot(aes(x = Image, y = Mean, color = Patch)) +
+  geom_point() +
+  labs(title = "congruent", x = "Image", y = "rcDxC") +
+  theme_bw() +
+  theme(axis.text = element_text(color = "black")) #-> gp_con
+
+df_cong %>% 
+  summarise(Image, Patch, Mean) %>% 
+  pivot_wider(values_from = Mean,
+              names_from = Patch) %>% 
+  mutate(delta = present - modified) -> df_cong_delta
+
+df_cong_delta %>% 
+  ggplot(aes(x = fct_reorder(Image, delta), y = delta)) +
+  geom_point() +
+  labs(title = "congruent", x = "Image", y = "rcDxC (rcDxC (original - modified))") +
+  theme_bw() +
+  theme(axis.text = element_text(color = "black"))
+ 
+df_sub %>%
+  filter(Image %in% Image_vis) %>% 
+  filter(values.CongOrIncong == "incongruent") %>% 
+  mutate(Patch = fct_recode(Patch, absent = "1", modified = "2", present = "3"),
+         Patch = fct_relevel(Patch, "present", "modified", "absent")) -> df_incong
+
+df_incong %>% 
+  ggplot(aes(x = Image, y = Mean, color = Patch)) +
+  geom_point() +
+  labs(title = "incongruent", x = "Image", y = "rcDxC") +
+  theme_bw() +
+  theme(axis.text = element_text(color = "black")) 
+
+df_incong %>% 
+  summarise(Image, Patch, Mean) %>% 
+  pivot_wider(values_from = Mean,
+              names_from = Patch) %>% 
+  mutate(delta = present - modified) -> df_incong_delta
+
+df_incong_delta %>% 
+  ggplot(aes(x = fct_reorder(Image, delta), y = delta)) +
+  geom_point() +
+  labs(title = "incongruent", x = "Image", y = "rcDxC (original - modified)") +
+  theme_bw() +
+  theme(axis.text = element_text(color = "black"))
+
+df_cong_delta %>% 
+  mutate(c_present = present,
+         c_modified = modified,
+         c_delta = delta) %>% 
+  select(Image, c_present, c_modified, c_delta)-> df_cong_delta
+
+df_incong_delta %>% 
+  mutate(in_present = present,
+         in_modified = modified,
+         in_delta = delta) %>% 
+  select(Image, in_present, in_modified, in_delta)-> df_incong_delta
+
+left_join(df_cong_delta, df_incong_delta) -> df_cong_incong
+
+df_cong_incong %>% 
+  mutate(category = case_when(c_delta < 0 & in_delta < 0 ~ "congruent(-)incongruent(-)",
+                              c_delta < 0 & in_delta >= 0 ~ "congruent(-)incongruent(+)",
+                              c_delta >= 0 & in_delta < 0 ~ "congruent(+)incongruent(-)",
+                              c_delta >= 0 & in_delta >= 0 ~ "congruent(+)incongruent(+)")) -> df_cong_incong
+
+df_cong_incong %>% #Figure S2
+  ggplot(aes(x = c_delta, y = in_delta, color = category)) +
+  geom_point() +
+  geom_text(aes(label = Image), size = 4, vjust = 0, hjust = 0) +
+  scale_x_continuous(breaks=seq(-3.0, 3.0, 1.0)) +
+  scale_y_continuous(breaks=seq(-3.0, 3.0, 1.0)) +
+  labs(x = "congruent rcDxC (original - modified)", y = "incongruent rcDxC (original - modified)") +
+  scale_fill_manual(values=cbPalette) +
+  scale_colour_manual(values=cbPalette) +
+  theme_bw() + 
+  theme(legend.position = c(0.3, 0.8),
+        legend.text = element_text(size = 12, color = "black"),
+        axis.text = element_text(size = 12, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold"))
