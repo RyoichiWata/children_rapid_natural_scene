@@ -213,14 +213,8 @@ df_incong_delta %>%
 
 left_join(df_cong_delta, df_incong_delta) -> df_cong_incong
 
-df_cong_incong %>% 
-  mutate(category = case_when(c_delta < 0 & in_delta < 0 ~ "congruent(-)incongruent(-)",
-                              c_delta < 0 & in_delta >= 0 ~ "congruent(-)incongruent(+)",
-                              c_delta >= 0 & in_delta < 0 ~ "congruent(+)incongruent(-)",
-                              c_delta >= 0 & in_delta >= 0 ~ "congruent(+)incongruent(+)")) -> df_cong_incong
-
 df_cong_incong %>% #Figure S2
-  ggplot(aes(x = c_delta, y = in_delta, color = category)) +
+  ggplot(aes(x = c_delta, y = in_delta)) +
   geom_point() +
   geom_text(aes(label = Image), size = 4, vjust = 0, hjust = 0) +
   scale_x_continuous(breaks=seq(-3.0, 3.0, 1.0)) +
