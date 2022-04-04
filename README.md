@@ -1,0 +1,178 @@
+library(tidyverse)
+library(here)
+library(ggpubr)
+library(rstan)
+library(brms)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+files <- list.files(here("data"), pattern = "_raw.csv")
+
+read_data <- function(x){
+  read_csv(x) %>% 
+    mutate(group = str_sub(x, start = -9, end = -9),
+           age = str_sub(x, start = -12, end = -11)) -> d_out
+  return(d_out)
+}
+
+here("data", files) %>% 
+  map_df(read_data) -> df
+
+df %>% 
+  mutate(age = as.factor(age),
+         age = fct_recode(age, '5-6' = "56", '7-9' = "79", '10-12' = "12", 'adult' = "ad", '5-6(Ex.1b)' = "65"),
+         age = fct_relevel(age, "adult", "10-12", "7-9", "5-6", "5-6(Ex.1b)")) -> df
+
+df %>% 
+  select(subject, age) %>% 
+  distinct() %>% 
+  arrange(age) %>% 
+  mutate(id = row_number()) -> df_id
+
+df %>% 
+  left_join(df_id, by = c("subject", "age")) %>% 
+  select(-subject) %>% 
+  rename(subject = "id") -> df
+
+df %>% 
+  filter(values.Index == 0) %>% 
+  group_by(subject) %>% 
+  summarise(trial_correct = max(values.sum),
+            .groups = "drop") %>% 
+  filter(trial_correct <= 4) %>% 
+  pull(subject) -> subject_remove1
+
+df %>%
+  filter(values.res > 0) %>% 
+  group_by(subject) %>% 
+  summarise(N_patch = n(),
+            Total = sum(N_patch),
+            catch_correct = sum(values.accuracy),
+            catch_prop = catch_correct/Total, 
+            .groups = "drop") %>%
+  filter(catch_prop < 0.7) %>% 
+  pull(subject) -> subject_remove3
+
+df %>%
+  group_by(subject) %>%
+  filter(values.res == 0) %>% 
+  filter(values.Index != 0) %>% 
+  summarise(stim_num = length(values.patch_ID),
+            .groups = "drop") %>% 
+  filter(stim_num != 180) %>% 
+  pull(subject) -> subject_remove2
+
+subject_remove <- unique(c(subject_remove1, subject_remove2, subject_remove3))
+
+sub_total <- length(unique(df$subject))
+length(subject_remove1)/sub_total
+length(subject_remove2)/sub_total
+length(subject_remove3)/sub_total
+length(subject_remove)/sub_total
+
+df %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = (values.p_confidence * values.response)) -> df
+
+df %>%
+  group_by(subject, values.Index) %>% 
+  mutate(values.patch_ID_lag = lag(values.patch_ID)) %>% 
+  relocate(starts_with("values.patch_ID")) %>% 
+  mutate(bug_row = if_else(values.patch_ID == values.patch_ID_lag, 1, 0, 0),
+         .after = values.patch_ID_lag) %>% 
+  ungroup() %>% 
+  mutate(values.Exist_Object = if_else(bug_row == 1, 1, values.Exist_Object)) -> df3
+
+expand.grid(subject = unique(df3$subject),
+            values.Index = 1:30) %>% 
+  arrange(subject, values.Index) %>% 
+  mutate(id_loop = row_number()) %>% 
+  as_tibble() %>% 
+  right_join(df3, by = c("subject", "values.Index")) -> df4
+
+df4 %>% 
+  filter(subject < 0) -> df_null
+
+for (i in 1:max(df4$id_loop)) {
+  df_tmp <- filter(df4, id_loop == i)
+  condition_tmp <- unique(df_tmp$values.CongOrIncong)
+  if (condition_tmp == 0){
+    filter(df_tmp, values.Patch_Source == 3) %>% 
+      pull(values.Patch_Position) -> val_replace
+    
+  } else {
+    filter(df_tmp, values.Patch_Source == 2) %>% 
+      pull(values.Patch_Position) -> val_replace
+  }
+  
+  length(val_replace)
+  
+  df_tmp %>% 
+    mutate(values.Patch_Position = if_else(bug_row == 1, val_replace, values.Patch_Position)) -> df_tmp
+  
+  df_null <- bind_rows(df_null, df_tmp)
+}
+
+df_null
+
+df_null %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = (values.p_confidence * values.response)) %>%
+  group_by(subject, values.CongOrIncong, values.Patch_Source, res) %>%
+  summarise(N_patch = n(),
+            .groups = "drop") %>% 
+  complete(subject, values.CongOrIncong, values.Patch_Source, res) %>%
+  replace_na(replace = list(N_patch = 0)) %>% 
+  group_by(subject, values.CongOrIncong, values.Patch_Source) %>% 
+  mutate(Total = sum(N_patch), 
+         Prop = N_patch / Total,
+         Patch = as.character(values.Patch_Source),
+         values.CongOrIncong = if_else(values.CongOrIncong == 1,
+                                       "incongruent",
+                                       "congruent")) %>% 
+  ungroup() -> df_sub
+
+df %>% 
+  select(subject, age) %>% 
+  distinct() -> df_age
+
+left_join(df_age, df_sub, by = "subject") %>% 
+  mutate(age = as.factor(age))-> df_sub2
+
+df_sub2 %>% 
+  group_by(age, values.CongOrIncong, Patch, res) %>% 
+  summarise(N = n(),
+            Mean = mean(Prop),
+            SD = sd(Prop),
+            SE = SD/sqrt(N),
+            .groups = "drop") -> df_tmp
+
+df_tmp %>% 
+  filter(values.CongOrIncong == "congruent") %>% 
+  mutate(Patch = fct_recode(Patch, absent = "1", present = "2", modified = "3"),
+         Patch = fct_relevel(Patch, "present", "modified", "absent")) -> df_tmp_cong
+
+df_tmp %>% 
+  filter(values.CongOrIncong == "incongruent") %>% 
+  mutate(Patch = fct_recode(Patch, absent = "1", modified = "2", present = "3"),
+         Patch = fct_relevel(Patch, "present", "modified", "absent")) -> df_tmp_incong 
+
+bind_rows(df_tmp_cong, df_tmp_incong) %>% 
+  mutate(res = as.factor(res))-> df_tmp2 
+
+df_tmp2 %>% #Figure 2
+  ggplot(aes(x = res, y = Mean, color = Patch)) +
+  geom_linerange(aes(ymax = Mean + SE, ymin = Mean - SE), lwd = 1) +
+  geom_point(size = 2) +
+  geom_line(aes(group = Patch)) +
+  facet_grid(values.CongOrIncong~age) +
+  scale_fill_manual(values=cbPalette) +
+  scale_colour_manual(values=cbPalette, guide = guide_legend(title=NULL)) +
+  labs(x = "Decision × Confidence", y = "Mean Proportion") +
+  theme_bw()+
+  theme(axis.text = element_text(size = 12, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold"))
