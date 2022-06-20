@@ -130,8 +130,8 @@ df_null %>%
          Prop = N_patch / Total,
          Patch = as.character(values.Patch_Source),
          Condition = if_else(values.CongOrIncong == 1,
-                                       "incongruent",
-                                       "congruent")) %>% 
+                             "incongruent",
+                             "congruent")) %>% 
   ungroup() -> df_sub
 
 df_sub %>% 
@@ -310,3 +310,19 @@ plot(eff, points = FALSE)
 
 bf <- bayes_factor(model_age, model_null)
 bf
+
+df_auc_tmp3 %>%
+  filter(age == "5-6(Ex.1b)") -> df_auc_tmp4b
+
+model_1 <- brm(
+  formula = AUC ~ 1,
+  family = gaussian(),
+  data = df_auc_tmp4b,
+  seed = 1,
+  prior = c(set_prior("cauchy(0,1)", class = "Intercept"),
+            set_prior("cauchy(0,1)", class = "sigma")),
+  iter = 10000,
+  save_pars = save_pars(all = TRUE)
+)
+
+summary(model_1)
