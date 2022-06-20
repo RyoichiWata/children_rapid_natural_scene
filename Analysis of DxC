@@ -118,6 +118,9 @@ for (i in 1:max(df4$id_loop)) {
 df_null
 
 df_null %>% 
+  filter(!subject %in% subject_remove) %>% 
+  filter(values.Index != 0, values.res == 0) %>% # practiceとcatchを除外
+  mutate(res = (values.p_confidence * values.response)) %>%
   group_by(subject, values.CongOrIncong, values.Patch_Source, res) %>%
   summarise(N_patch = n(),
             .groups = "drop") %>% 
