@@ -251,7 +251,7 @@ df_final%>%
         axis.title = element_text(size = 12, color = "black"),
         strip.text = element_text(face = "bold")) 
 
-df_auc_tmp3 %>% #Figure 4
+df_auc_tmp3 %>% #Figure 3
   ggplot(aes(x=age, y=AUC, fill = age))+
   geom_flat_violin(aes(x=age, y=AUC), 
                    position = position_nudge(x = .15, y = 0),adjust =2, trim = TRUE)+    
