@@ -22,7 +22,7 @@ here("data", files) %>%
 
 df %>% 
   mutate(age = fct_recode(age, '5-6' = "56", '7-9' = "79", '10-12' = "12", 'adult' = "ad", '5-6(Ex.1b)' = "65"),
-         age = fct_relevel(age, "adult", "10-12", "7-9", "5-6", "5-6(Ex.1b)"))-> df
+         age = fct_relevel(age, "5-6", "7-9", "10-12", "adult", "5-6(Ex.1b)"))-> df
 df %>% 
   select(subject, age) %>% 
   distinct() %>% 
@@ -271,58 +271,18 @@ df_auc_tmp3 %>% #Figure 3
 
 df_auc_tmp3 %>%
   filter(age != "5-6(Ex.1b)") %>% 
-  mutate(age = fct_recode(age, '1' = "adult", '2' = "10-12", '3' = "7-9", '4' = "5-6"),
+  mutate(age = fct_recode(age, '1' = "5-6", '2' = "7-9", '3' = "10-12", '4' = "adult"),
          age = as.numeric(age)) -> df_auc_tmp4
 
 df_auc_tmp4 %>%
   summary()
 
-model.matrix(AUC ~ age, df_auc_tmp4)
 
-model_age <- brm(
-  formula = AUC ~ age,
-  family = gaussian(),
-  data = df_auc_tmp4,
-  seed = 1,
-  prior = c(set_prior("cauchy(0,1)", class = "Intercept"),
-            set_prior("cauchy(0,1)", class = "sigma")),
-  iter = 10000,
-  save_pars = save_pars(all = TRUE)
-)
+model <- lm(AUC ~ age, data = df_auc_tmp4)
+model
 
-summary(model_age)
-
-model_null <- brm(
-  formula = AUC ~ 1,
-  family = gaussian(),
-  data = df_auc_tmp4,
-  seed = 1,
-  prior = c(set_prior("cauchy(0,1)", class = "Intercept"),
-            set_prior("cauchy(0,1)", class = "sigma")),
-  iter = 10000,
-  save_pars = save_pars(all = TRUE)
-)
-
-summary(model_null)
-
-eff <- marginal_effects(model_age)
-plot(eff, points = FALSE)
-
-bf <- bayes_factor(model_age, model_null)
+x= 0.02115  
+a <- dnorm(x, mean=0.000107926, sd=0.006633833)
+b <- dnorm(x, mean=0.02541938, sd=0.007318956)
+bf<-b/a
 bf
-
-df_auc_tmp3 %>%
-  filter(age == "5-6(Ex.1b)") -> df_auc_tmp4b
-
-model_1 <- brm(
-  formula = AUC ~ 1,
-  family = gaussian(),
-  data = df_auc_tmp4b,
-  seed = 1,
-  prior = c(set_prior("cauchy(0,1)", class = "Intercept"),
-            set_prior("cauchy(0,1)", class = "sigma")),
-  iter = 10000,
-  save_pars = save_pars(all = TRUE)
-)
-
-summary(model_1)
