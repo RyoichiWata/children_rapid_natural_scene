@@ -1,8 +1,11 @@
 library(tidyverse)
+library(tidybayes)
+library(BayesFactor)
+library(cmdstanr)
 library(here)
 library(ggpubr)
-library(rstan)
 library(brms)
+library(rstan)
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
@@ -268,8 +271,174 @@ df_auc_tmp4 %>%
 model <- lm(AUC ~ age, data = df_auc_tmp4)
 model
 
+
+
+library(truncnorm)
+#age=0.004687
+
+#Simulation for H1_1(age effect model) and H1_0(no-age effect model)
+#Type1
+age1=0.800
+age4=0.900
+delta=(age4-age1)/3
+age2=age1+delta
+age3=age2+delta
+
+h0_age <- data.frame(age=as.numeric(""), trials=as.numeric(""), h="0")
+h1_age <- data.frame(age=as.numeric(""), trials=as.numeric(""), h="1")
+
+sd <- 0.1
+
+N1=25
+N2=35
+N3=30
+N4=32
+
+
+
+#data for modeling
+for (i in 1:10000){
+  #h0num
+  Image_1_1 <- data.frame(subject = (1:N1), AUC = rtruncnorm(n=N1, a=0, b=1.0, mean = age4, sd=sd), age ="1")
+  
+  Image_1_2 <- data.frame(subject = (1:N2), AUC = rtruncnorm(n=N2, a=0, b=1.0, mean = age4, sd=sd), age ="2")
+
+  Image_1_3 <- data.frame(subject = (1:N3), AUC = rtruncnorm(n=N3, a=0, b=1.0, mean = age4, sd=sd), age ="3")
+
+  Image_1_4 <- data.frame(subject = (1:N4), AUC = rtruncnorm(n=N4, a=0, b=1.0, mean = age4, sd=sd), age ="4")
+
+  imageh0 <- bind_rows(Image_1_1, Image_1_2, Image_1_3, Image_1_4)
+  
+  #h1num
+  Image_1_1 <- data.frame(subject = (1:N1), AUC = rtruncnorm(n=N1, a=0, b=1.0, mean = age1, sd=sd), age ="1")
+
+  Image_1_2 <- data.frame(subject = (1:N2), AUC = rtruncnorm(n=N2, a=0, b=1.0, mean = age2, sd=sd), age ="2")
+
+  Image_1_3 <- data.frame(subject = (1:N3), AUC = rtruncnorm(n=N3, a=0, b=1.0, mean = age3, sd=sd), age ="3")
+
+  Image_1_4 <- data.frame(subject = (1:N4), AUC = rtruncnorm(n=N4, a=0, b=1.0, mean = age4, sd=sd), age ="4")
+
+  imageh1 <- bind_rows(Image_1_1, Image_1_2, Image_1_3, Image_1_4)
+  
+  
+  imageh0%>% 
+    mutate(age = as.numeric(age)) -> imageh0
+  
+  imageh1%>% 
+    mutate(age = as.numeric(age)) -> imageh1
+  
+  
+  h0 <- lm(AUC ~ age, data = imageh0)
+  h0_age_i <- data.frame(age = h0$coefficients[2], trials = i, h=as.character(0))
+  
+  bind_rows(h0_age, h0_age_i) -> h0_age
+  
+  h1 <- lm(AUC ~ age, data = imageh1)
+  h1_age_i <- data.frame(age = h1$coefficients[2], trials = i, h=as.character(1)) 
+  
+  
+  bind_rows(h1_age, h1_age_i) -> h1_age
+  
+  print(i)
+}
+
+imageh0 %>% 
+  mutate(age = as.character(age)) %>% 
+  ggplot(aes(x=age, y=AUC, fill = age))+
+  geom_flat_violin(aes(x=age, y=AUC), 
+                   position = position_nudge(x = .15, y = 0),adjust =2, trim = TRUE)+    
+  geom_point(position = position_jitter(width = .15), size = 1)+    
+  geom_boxplot(aes(x = as.numeric(age) + 0.25, y = AUC, group = age), 
+               outlier.shape = NA, width = .1, fill = "white", colour = "BLACK") +
+  guides(fill = "none", colour = "none")+
+  scale_fill_manual(values=cbPalette) +
+  scale_colour_manual(values=cbPalette) +
+  ggtitle("present & original vs. absent")+
+  ylab('Type 1 AUC') +
+  xlab('age') +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+imageh1 %>% 
+  mutate(age = as.character(age)) %>% 
+  ggplot(aes(x=age, y=AUC, fill = age))+
+  geom_flat_violin(aes(x=age, y=AUC), 
+                   position = position_nudge(x = .15, y = 0),adjust =2, trim = TRUE)+    
+  geom_point(position = position_jitter(width = .15), size = 1)+    
+  geom_boxplot(aes(x = as.numeric(age) + 0.25, y = AUC, group = age), 
+               outlier.shape = NA, width = .1, fill = "white", colour = "BLACK") +
+  guides(fill = "none", colour = "none")+
+  scale_fill_manual(values=cbPalette) +
+  scale_colour_manual(values=cbPalette) +
+  ggtitle("present & original vs. absent")+
+  ylab('Type 1 AUC') +
+  xlab('age') +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+
+h0_age %>% 
+  filter(age != "") -> h0_age
+h0_age%>% 
+  ggplot(aes(x=age, y = ..density..))+
+  geom_histogram(position = "identity", alpha = 30) +
+  #geom_density(aes(color = h, alpha = 0.2), show.legend = F) +
+  #ggtitle("n=1, N=16, Image=240, repeat=100")+
+  ylab('Density') +
+  xlab('age') +
+  #geom_vline(xintercept = 0.1, lty = 5) +
+  #geom_vline(xintercept = 10, lty = 5) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+h1_age %>% 
+  filter(age != "") -> h1_age 
+h1_age%>% 
+  ggplot(aes(x=age, y = ..density..))+
+  geom_histogram(position = "identity", alpha = 30) +
+  #geom_density(aes(color = h, alpha = 0.2), show.legend = F) +
+  #ggtitle("n=1, N=16, Image=240, repeat=100")+
+  ylab('Density') +
+  xlab('age') +
+  #geom_vline(xintercept = 0.1, lty = 5) +
+  #geom_vline(xintercept = 10, lty = 5) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+bind_rows(h0_age, h1_age) -> h01
+
+h01 %>% 
+  filter(age != "") %>% 
+  ggplot(aes(x=age, y = ..density.., fill=h))+
+  geom_histogram(position = "identity", alpha = 30) +
+  scale_fill_manual(values=cbPalette) +
+  #geom_density(aes(color = h, alpha = 0.2), show.legend = F) +
+  #ggtitle("n=1, N=16, Image=240, repeat=100")+
+  ylab('Density') +
+  xlab('Age effect') +
+  theme_bw() +
+  theme(axis.text = element_text(size = 12, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        strip.text = element_text(face = "bold")) 
+
+
+m1 <- mean(h1_age$age)
+sd1 <- sd(h1_age$age)
+
+m0 <- mean(h0_age$age)
+sd0 <- sd(h0_age$age)
+
+#Bayes factor
 x= 0.004687    
-a <- dnorm(x, mean=0.000107926, sd=0.006633833)
-b <- dnorm(x, mean=0.02541938, sd=0.007318956)
+a <- dnorm(x, mean=m0, sd=sd0)
+b <- dnorm(x, mean=m1, sd=sd1)
 bf<-b/a
 bf
